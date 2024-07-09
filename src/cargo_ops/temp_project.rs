@@ -8,7 +8,7 @@ use std::{
     rc::Rc,
 };
 
-use anyhow::{anyhow, Context};
+use anyhow::{anyhow, bail, Context};
 use cargo::{
     core::{Dependency, PackageId, Summary, Verbosity, Workspace},
     ops::{update_lockfile, UpdateOptions},
@@ -16,7 +16,8 @@ use cargo::{
         config::SourceConfigMap,
         source::{QueryKind, Source},
     },
-    util::{cache_lock::CacheLockMode, network::PollExt, CargoResult, Config},
+    util::{cache_lock::CacheLockMode, network::PollExt, CargoResult},
+    GlobalContext,
 };
 use semver::{Version, VersionReq};
 use tempfile::{Builder, TempDir};
@@ -30,7 +31,7 @@ pub struct TempProject<'tmp> {
     pub workspace: Rc<RefCell<Option<Workspace<'tmp>>>>,
     pub temp_dir: TempDir,
     manifest_paths: Vec<PathBuf>,
-    config: Config,
+    gctx: GlobalContext,
     relative_manifest: String,
     options: &'tmp Options,
     is_workspace_project: bool,
@@ -156,24 +157,24 @@ impl<'tmp> TempProject<'tmp> {
         }
 
         let relative_manifest = String::from(&orig_manifest[workspace_root_str.len() + 1..]);
-        let config = Self::generate_config(temp_dir.path(), &relative_manifest, options)?;
+        let gctx = Self::generate_gctx(temp_dir.path(), &relative_manifest, options)?;
 
         Ok(TempProject {
             workspace: Rc::new(RefCell::new(None)),
             temp_dir,
             manifest_paths: tmp_manifest_paths,
-            config,
+            gctx,
             relative_manifest,
             options,
             is_workspace_project: orig_workspace.workspace_mode,
         })
     }
 
-    fn generate_config(
+    fn generate_gctx(
         root: &Path,
         relative_manifest: &str,
         options: &Options,
-    ) -> CargoResult<Config> {
+    ) -> CargoResult<GlobalContext> {
         let shell = ::cargo::core::Shell::new();
         let cwd = env::current_dir()
             .with_context(|| "Cargo couldn't get the current directory of the process")?;
@@ -191,8 +192,8 @@ impl<'tmp> TempProject<'tmp> {
         // if it is, set it in the configure options
         let cargo_home_path = std::env::var_os("CARGO_HOME").map(std::path::PathBuf::from);
 
-        let mut config = Config::new(shell, cwd, homedir);
-        config.configure(
+        let mut gctx = GlobalContext::new(shell, cwd, homedir);
+        gctx.configure(
             0,
             options.verbose == 0,
             Some(&options.color.to_string().to_ascii_lowercase()),
@@ -203,7 +204,7 @@ impl<'tmp> TempProject<'tmp> {
             &[],
             &[],
         )?;
-        Ok(config)
+        Ok(gctx)
     }
 
     /// Run `cargo update` against the temporary project
@@ -212,7 +213,7 @@ impl<'tmp> TempProject<'tmp> {
             recursive: false,
             precise: None,
             to_update: Vec::new(),
-            config: &self.config,
+            gctx: &self.gctx,
             dry_run: false,
             workspace: self.is_workspace_project,
         };
@@ -320,8 +321,7 @@ impl<'tmp> TempProject<'tmp> {
         }
         let root_manifest = self.temp_dir.path().join(&self.relative_manifest);
 
-        *self.workspace.borrow_mut() =
-            Some(Workspace::new(Path::new(&root_manifest), &self.config)?);
+        *self.workspace.borrow_mut() = Some(Workspace::new(Path::new(&root_manifest), &self.gctx)?);
         Ok(())
     }
 
@@ -373,8 +373,7 @@ impl<'tmp> TempProject<'tmp> {
         }
 
         let root_manifest = self.temp_dir.path().join(&self.relative_manifest);
-        *self.workspace.borrow_mut() =
-            Some(Workspace::new(Path::new(&root_manifest), &self.config)?);
+        *self.workspace.borrow_mut() = Some(Workspace::new(Path::new(&root_manifest), &self.gctx)?);
         Ok(())
     }
 
@@ -390,7 +389,7 @@ impl<'tmp> TempProject<'tmp> {
         let version = package_id.version();
         let source_id = package_id.source_id().with_locked_precise();
         let query_result = {
-            let ws_config = workspace.workspace.config();
+            let ws_config = workspace.workspace.gctx();
             let _lock = ws_config.acquire_package_cache_lock(CacheLockMode::DownloadExclusive)?;
             let source_config = SourceConfigMap::new(ws_config)?;
             let mut source = source_config.load(source_id, &HashSet::new())?;
@@ -402,56 +401,58 @@ impl<'tmp> TempProject<'tmp> {
             let mut query_result = source
                 .query_vec(&dependency, QueryKind::Exact)?
                 .expect("Source should be ready");
-            query_result.sort_by(|a, b| b.version().cmp(a.version()));
+            query_result.sort_by(|a, b| b.as_summary().version().cmp(a.as_summary().version()));
             query_result
         };
         let version_req = match requirement {
             Some(requirement) => Some(VersionReq::parse(requirement)?),
             None => None,
         };
-        let latest_result = query_result.iter().find(|summary| {
-            if summary.version() < version {
+        let latest_result = query_result.iter().find(|idx_sum| {
+            let idx_vers = idx_sum.as_summary().version();
+
+            if idx_vers < version {
                 false
             } else if version_req.is_none() {
                 true
             } else if find_latest {
                 // this unwrap is safe since we check if `version_req` is `None` before this
                 // (which is only `None` if `requirement` is `None`)
-                self.options.aggressive
-                    || valid_latest_version(requirement.unwrap(), summary.version())
+                self.options.aggressive || valid_latest_version(requirement.unwrap(), idx_vers)
             } else {
                 // this unwrap is safe since we check if `version_req` is `None` before this
-                version_req.as_ref().unwrap().matches(summary.version())
+                version_req.as_ref().unwrap().matches(idx_vers)
             }
         });
 
         let latest_summary = match latest_result {
             Some(summary) => summary,
-            None => {
-                // If the version_req cannot be found use the version
-                // this happens when we use a git repository as a dependency, without specifying
-                // the version in Cargo.toml, preventing us from needing an unwrap below in the
-                // warn
-                let ver_req = match version_req {
-                    Some(v_r) => format!("{v_r}"),
-                    None => format!("{version}"),
-                };
-                // this should be safe it should only fail if we cannot get
-                // access to write to the terminal
-                // if this fails it's a cargo (as a dependency) issue
-                self.warn(format!(
-                    "cannot compare {} crate version found in toml {} with crates.io latest {}",
-                    name,
-                    ver_req,
-                    query_result[0].version()
-                ))?;
+            None => match query_result.first() {
+                Some(ref first_res) => {
+                    // If the version_req cannot be found use the version
+                    // this happens when we use a git repository as a dependency, without specifying
+                    // the version in Cargo.toml, preventing us from needing an unwrap below in the
+                    // warn
+                    let ver_req = version_req
+                        .map(|v_r| v_r.to_string())
+                        .unwrap_or_else(|| version.to_string());
 
-                // this returns the latest version
-                &query_result[0]
-            }
+                    // this should be safe it should only fail if we cannot get
+                    // access to write to the terminal
+                    // if this fails it's a cargo (as a dependency) issue
+                    self.warn(format!(
+                        "cannot compare {name} crate version found in toml {ver_req} with crates.io latest {}",
+                        first_res.as_summary().version()
+                    ))?;
+
+                    // this returns the latest version
+                    first_res
+                }
+                None => bail!("workspace query for {name} returned no results"),
+            },
         };
 
-        Ok(latest_summary.clone())
+        Ok(latest_summary.as_summary().clone())
     }
 
     fn feature_includes(&self, name: &str, optional: bool, features_table: &Option<Value>) -> bool {
@@ -710,14 +711,15 @@ impl<'tmp> TempProject<'tmp> {
     }
 
     fn warn<T: ::std::fmt::Display>(&self, message: T) -> CargoResult<()> {
-        let original_verbosity = self.config.shell().verbosity();
-        self.config.shell().set_verbosity(if self.options.quiet {
+        let mut shell = self.gctx.shell();
+        let original_verbosity = shell.verbosity();
+        shell.set_verbosity(if self.options.quiet {
             Verbosity::Quiet
         } else {
             Verbosity::Normal
         });
-        self.config.shell().warn(message)?;
-        self.config.shell().set_verbosity(original_verbosity);
+        shell.warn(message)?;
+        shell.set_verbosity(original_verbosity);
         Ok(())
     }
 }
