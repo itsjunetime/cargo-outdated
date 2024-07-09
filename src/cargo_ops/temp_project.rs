@@ -8,7 +8,7 @@ use std::{
     rc::Rc,
 };
 
-use anyhow::{anyhow, Context};
+use anyhow::{anyhow, bail, Context};
 use cargo::{
     core::{Dependency, PackageId, Summary, Verbosity, Workspace},
     ops::{update_lockfile, UpdateOptions},
@@ -401,60 +401,59 @@ impl<'tmp> TempProject<'tmp> {
             let dependency = Dependency::parse(name, None, source_id)?;
             let mut query_result = source
                 .query_vec(&dependency, QueryKind::Exact)?
-                .expect("Source should be ready")
-                .into_iter()
-                .map(|index_summary| index_summary.into_summary())
-                .collect::<Vec<_>>();
-            query_result.sort_by(|a, b| b.version().cmp(a.version()));
+                .expect("Source should be ready");
+            query_result.sort_by(|a, b| b.as_summary().version().cmp(a.as_summary().version()));
             query_result
         };
         let version_req = match requirement {
             Some(requirement) => Some(VersionReq::parse(requirement)?),
             None => None,
         };
-        let latest_result = query_result.iter().find(|summary| {
-            if summary.version() < version {
+        let latest_result = query_result.iter().find(|idx_sum| {
+            let idx_vers = idx_sum.as_summary().version();
+
+            if idx_vers < version {
                 false
             } else if version_req.is_none() {
                 true
             } else if find_latest {
                 // this unwrap is safe since we check if `version_req` is `None` before this
                 // (which is only `None` if `requirement` is `None`)
-                self.options.aggressive
-                    || valid_latest_version(requirement.unwrap(), summary.version())
+                self.options.aggressive || valid_latest_version(requirement.unwrap(), idx_vers)
             } else {
                 // this unwrap is safe since we check if `version_req` is `None` before this
-                version_req.as_ref().unwrap().matches(summary.version())
+                version_req.as_ref().unwrap().matches(idx_vers)
             }
         });
 
         let latest_summary = match latest_result {
             Some(summary) => summary,
-            None => {
-                // If the version_req cannot be found use the version
-                // this happens when we use a git repository as a dependency, without specifying
-                // the version in Cargo.toml, preventing us from needing an unwrap below in the
-                // warn
-                let ver_req = match version_req {
-                    Some(v_r) => format!("{v_r}"),
-                    None => format!("{version}"),
-                };
-                // this should be safe it should only fail if we cannot get
-                // access to write to the terminal
-                // if this fails it's a cargo (as a dependency) issue
-                self.warn(format!(
-                    "cannot compare {} crate version found in toml {} with crates.io latest {}",
-                    name,
-                    ver_req,
-                    query_result[0].version()
-                ))?;
+            None => match query_result.first() {
+                Some(ref first_res) => {
+                    // If the version_req cannot be found use the version
+                    // this happens when we use a git repository as a dependency, without specifying
+                    // the version in Cargo.toml, preventing us from needing an unwrap below in the
+                    // warn
+                    let ver_req = version_req
+                        .map(|v_r| v_r.to_string())
+                        .unwrap_or_else(|| version.to_string());
 
-                // this returns the latest version
-                &query_result[0]
-            }
+                    // this should be safe it should only fail if we cannot get
+                    // access to write to the terminal
+                    // if this fails it's a cargo (as a dependency) issue
+                    self.warn(format!(
+                        "cannot compare {name} crate version found in toml {ver_req} with crates.io latest {}",
+                        first_res.as_summary().version()
+                    ))?;
+
+                    // this returns the latest version
+                    first_res
+                }
+                None => bail!("workspace query for {name} returned no results"),
+            },
         };
 
-        Ok(latest_summary.clone())
+        Ok(latest_summary.as_summary().clone())
     }
 
     fn feature_includes(&self, name: &str, optional: bool, features_table: &Option<Value>) -> bool {
@@ -713,14 +712,15 @@ impl<'tmp> TempProject<'tmp> {
     }
 
     fn warn<T: ::std::fmt::Display>(&self, message: T) -> CargoResult<()> {
-        let original_verbosity = self.context.shell().verbosity();
-        self.context.shell().set_verbosity(if self.options.quiet {
+        let mut shell = self.context.shell();
+        let original_verbosity = shell.verbosity();
+        shell.set_verbosity(if self.options.quiet {
             Verbosity::Quiet
         } else {
             Verbosity::Normal
         });
-        self.context.shell().warn(message)?;
-        self.context.shell().set_verbosity(original_verbosity);
+        shell.warn(message)?;
+        shell.set_verbosity(original_verbosity);
         Ok(())
     }
 }

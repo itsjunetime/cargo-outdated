@@ -31,13 +31,10 @@ fn main() {
     env_logger::init();
     let options = cli::parse();
 
-    let mut context = match GlobalContext::default() {
-        Ok(cfg) => cfg,
-        Err(e) => {
-            let mut shell = cargo::core::Shell::new();
-            cargo::exit_with_error(e.into(), &mut shell)
-        }
-    };
+    let mut context = GlobalContext::default().unwrap_or_else(|e| {
+        let mut shell = cargo::core::Shell::new();
+        cargo::exit_with_error(e.into(), &mut shell)
+    });
 
     // Only use a custom transport if any HTTP options are specified,
     // such as proxies or custom certificate authorities. The custom
