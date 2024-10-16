@@ -98,6 +98,7 @@ impl<'ela> ElaborateWorkspace<'ela> {
             &specs,
             HasDevUnits::Yes,
             ForceAllTargets::Yes,
+            false
         )?;
         let packages = ws_resolve.pkg_set;
         let resolve = ws_resolve
@@ -105,6 +106,7 @@ impl<'ela> ElaborateWorkspace<'ela> {
             .expect("Error getting workspace resolved");
         let mut pkgs = HashMap::new();
         let mut pkg_deps = HashMap::new();
+
         for pkg in packages.get_many(packages.package_ids())? {
             let pkg_id = pkg.package_id();
             pkgs.insert(pkg_id, pkg.clone());
