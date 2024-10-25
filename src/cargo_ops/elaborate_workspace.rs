@@ -26,7 +26,10 @@ use tabwriter::TabWriter;
 
 use crate::error::OutdatedError;
 
-use super::{pkg_status::*, Options};
+use super::{
+    pkg_status::{PkgStatus, Status},
+    Options,
+};
 
 /// An elaborate workspace containing resolved dependencies and
 /// the update status of packages
@@ -98,7 +101,7 @@ impl<'ela> ElaborateWorkspace<'ela> {
             &specs,
             HasDevUnits::Yes,
             ForceAllTargets::Yes,
-            false
+            false,
         )?;
         let packages = ws_resolve.pkg_set;
         let resolve = ws_resolve
@@ -262,12 +265,12 @@ impl<'ela> ElaborateWorkspace<'ela> {
                             .and_then(|id| compat.pkg_deps.get(&id))
                             .map(HashMap::keys)
                             .and_then(|mut deps| deps.find(|dep| dep.name() == name))
-                            .cloned();
+                            .copied();
                         let latest_pkg = latest_pkg
                             .and_then(|id| latest.pkg_deps.get(&id))
                             .map(HashMap::keys)
                             .and_then(|mut deps| deps.find(|dep| dep.name() == name))
-                            .cloned();
+                            .copied();
                         let mut path = path.clone();
                         path.push(dep);
                         queue.push_back((path, compat_pkg, latest_pkg));

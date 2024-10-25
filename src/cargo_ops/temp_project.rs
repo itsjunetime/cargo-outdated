@@ -196,8 +196,8 @@ impl<'tmp> TempProject<'tmp> {
             0,
             options.verbose == 0,
             Some(&options.color.to_string().to_ascii_lowercase()),
-            options.frozen(),
-            options.locked(),
+            Options::frozen(),
+            Options::locked(),
             options.offline,
             &cargo_home_path,
             &[],
@@ -429,7 +429,7 @@ impl<'tmp> TempProject<'tmp> {
         let latest_summary = match latest_result {
             Some(summary) => summary,
             None => match query_result.first() {
-                Some(ref first_res) => {
+                Some(first_res) => {
                     // If the version_req cannot be found use the version
                     // this happens when we use a git repository as a dependency, without specifying
                     // the version in Cargo.toml, preventing us from needing an unwrap below in the
@@ -463,9 +463,8 @@ impl<'tmp> TempProject<'tmp> {
         if !optional && self.options.features.contains(&String::from("default")) {
             return true;
         }
-        let features_table = match *features_table {
-            Some(Value::Table(ref features_table)) => features_table,
-            _ => return false,
+        let Some(Value::Table(ref features_table)) = features_table else {
+            return false;
         };
         let mut to_resolve: Vec<&str> = self
             .options
@@ -562,16 +561,13 @@ impl<'tmp> TempProject<'tmp> {
                     if !(version_to_latest || t.contains_key("features")) {
                         continue;
                     }
-                    let optional = t
-                        .get("optional")
-                        .map(|optional| {
-                            if let Value::Boolean(optional) = *optional {
-                                optional
-                            } else {
-                                false
-                            }
-                        })
-                        .unwrap_or(false);
+                    let optional = t.get("optional").map_or(false, |optional| {
+                        if let Value::Boolean(optional) = *optional {
+                            optional
+                        } else {
+                            false
+                        }
+                    });
                     if !self.feature_includes(name, optional, features) {
                         continue;
                     }
@@ -592,12 +588,9 @@ impl<'tmp> TempProject<'tmp> {
                         workspace,
                         version_to_latest,
                     );
-                    let summary = match r_summary {
-                        Result::Ok(val) => val,
-                        Result::Err(_) => {
-                            eprintln!("Update for {} could not be found!", name.clone());
-                            return Ok(());
-                        }
+                    let Ok(summary) = r_summary else {
+                        eprintln!("Update for {name} could not be found!");
+                        return Ok(());
                     };
                     if version_to_latest && t.contains_key("version") {
                         replaced.insert(
@@ -605,17 +598,17 @@ impl<'tmp> TempProject<'tmp> {
                             Value::String(summary.version().to_string()),
                         );
                     }
-                    if replaced.contains_key("features") {
-                        let features = match replaced.get("features") {
-                            Some(Value::Array(ref features)) => features
+                    match replaced.get("features") {
+                        Some(Value::Array(ref features)) => {
+                            let features = features
                                 .iter()
                                 .filter(|&feature| {
-                                    let feature = match *feature {
-                                        Value::String(ref feature) => feature,
-                                        _ => panic!(
+                                    let Value::String(ref feature) = *feature else {
+                                        panic!(
                                             "Features section of {name} is not an array of strings"
-                                        ),
+                                        )
                                     };
+
                                     let retained =
                                         features_and_options(&summary).contains(feature.as_str());
                                     // this unwrap should be safe it should only fail if we cannot
@@ -635,11 +628,12 @@ impl<'tmp> TempProject<'tmp> {
                                     retained
                                 })
                                 .cloned()
-                                .collect::<Vec<Value>>(),
-                            _ => panic!("Features section of {name} is not an array"),
-                        };
-                        replaced.insert("features".to_owned(), Value::Array(features));
-                    }
+                                .collect::<Vec<Value>>();
+                            replaced.insert("features".to_owned(), Value::Array(features));
+                        }
+                        None => {}
+                        _ => panic!("Features section of {name} is not an array"),
+                    };
                     dependencies.insert(name.clone(), Value::Table(replaced));
                 }
                 _ => panic!("Dependency spec is neither a string nor a table {dep_key}"),
@@ -810,7 +804,7 @@ fn valid_latest_version(mut requirement: &str, version: &Version) -> bool {
         // both are stable, leave for further filters
         // ...or...
         // user was on an unstable one, newer stable ones are still candidates
-        (false, false) | (true, false) => true,
+        (false | true, false) => true,
         // both are unstable, must be in the same channel
         (true, true) => {
             requirement = requirement.trim_start_matches(&['=', ' ', '~', '^'][..]);
