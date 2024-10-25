@@ -22,10 +22,10 @@ impl fmt::Display for OutdatedError {
 impl std::error::Error for OutdatedError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
-            OutdatedError::CannotElaborateWorkspace => None,
-            OutdatedError::EmptyPath => None,
-            OutdatedError::NoWorkspace => None,
-            OutdatedError::NoMatchingDependency => None,
+            OutdatedError::CannotElaborateWorkspace
+            | OutdatedError::EmptyPath
+            | OutdatedError::NoWorkspace
+            | OutdatedError::NoMatchingDependency => None,
         }
     }
 }

@@ -109,9 +109,9 @@ impl Options {
         !(self.features.is_empty() || self.features.contains(&"default".to_owned()))
     }
 
-    pub fn locked(&self) -> bool { false }
+    pub fn locked() -> bool { false }
 
-    pub fn frozen(&self) -> bool { false }
+    pub fn frozen() -> bool { false }
 }
 
 pub fn parse() -> Options {
