@@ -8,17 +8,18 @@ use std::{
 
 use anyhow::anyhow;
 use cargo::{
+    GlobalContext,
     core::{
+        Dependency, FeatureValue, Package, PackageId, Workspace,
         compiler::{CompileKind, RustcTargetData},
         dependency::DepKind,
         resolver::{
-            features::{ForceAllTargets, HasDevUnits},
             CliFeatures,
+            features::{ForceAllTargets, HasDevUnits},
         },
-        Dependency, FeatureValue, Package, PackageId, Workspace,
     },
     ops::{self, Packages},
-    util::{context::GlobalContext, interning::InternedString, CargoResult},
+    util::{CargoResult, interning::InternedString},
 };
 use rustc_hash::FxHashMap;
 use serde::{Deserialize, Serialize};
@@ -27,8 +28,8 @@ use tabwriter::TabWriter;
 use crate::error::OutdatedError;
 
 use super::{
-    pkg_status::{PkgStatus, Status},
     Options,
+    pkg_status::{PkgStatus, Status},
 };
 
 /// An elaborate workspace containing resolved dependencies and
@@ -442,7 +443,7 @@ impl<'ela> ElaborateWorkspace<'ela> {
                         compat: status.compat.to_string(),
                         latest: status.latest.to_string(),
                         kind: Some(dependency_type.to_string()),
-                        platform: dependency.platform().map(|p| p.to_string()),
+                        platform: dependency.platform().map(ToString::to_string),
                     }
                 } else {
                     Metadata {

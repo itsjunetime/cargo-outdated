@@ -8,22 +8,23 @@ use std::{
     rc::Rc,
 };
 
-use anyhow::{anyhow, bail, Context};
+use anyhow::{Context, anyhow, bail};
 use cargo::{
+    GlobalContext,
     core::{Dependency, PackageId, Summary, Verbosity, Workspace},
-    ops::{update_lockfile, UpdateOptions},
+    ops::{UpdateOptions, update_lockfile},
     sources::{
         config::SourceConfigMap,
         source::{QueryKind, Source},
     },
-    util::{cache_lock::CacheLockMode, context::GlobalContext, network::PollExt, CargoResult},
+    util::{CargoResult, cache_lock::CacheLockMode, interning::InternedString, network::PollExt},
 };
 use semver::{Version, VersionReq};
 use tempfile::{Builder, TempDir};
-use toml::{value::Table, Value};
+use toml::{Value, value::Table};
 
 use super::{ElaborateWorkspace, Manifest};
-use crate::{error::OutdatedError, Options};
+use crate::{Options, error::OutdatedError};
 
 /// A temporary project
 pub struct TempProject<'tmp> {
@@ -313,7 +314,13 @@ impl<'tmp> TempProject<'tmp> {
             let package_name = manifest.name();
             let features = manifest.features.clone();
             Self::manipulate_dependencies(&mut manifest, &mut |deps| {
-                self.update_version_and_feature(deps, &features, workspace, &package_name, false)
+                self.update_version_and_feature(
+                    deps,
+                    features.as_ref(),
+                    workspace,
+                    &package_name,
+                    false,
+                )
             })?;
 
             Self::write_manifest(&manifest, manifest_path)?;
@@ -366,7 +373,13 @@ impl<'tmp> TempProject<'tmp> {
             let package_name = manifest.name();
             let features = manifest.features.clone();
             Self::manipulate_dependencies(&mut manifest, &mut |deps| {
-                self.update_version_and_feature(deps, &features, workspace, &package_name, true)
+                self.update_version_and_feature(
+                    deps,
+                    features.as_ref(),
+                    workspace,
+                    &package_name,
+                    true,
+                )
             })?;
 
             Self::write_manifest(&manifest, manifest_path)?;
@@ -456,14 +469,14 @@ impl<'tmp> TempProject<'tmp> {
         Ok(latest_summary.as_summary().clone())
     }
 
-    fn feature_includes(&self, name: &str, optional: bool, features_table: &Option<Value>) -> bool {
+    fn feature_includes(&self, name: &str, optional: bool, features_table: Option<&Value>) -> bool {
         if self.options.all_features() {
             return true;
         }
         if !optional && self.options.features.contains(&String::from("default")) {
             return true;
         }
-        let Some(Value::Table(ref features_table)) = features_table else {
+        let Some(Value::Table(features_table)) = features_table else {
             return false;
         };
         let mut to_resolve: Vec<&str> = self
@@ -485,7 +498,7 @@ impl<'tmp> TempProject<'tmp> {
             if features_table.contains_key(feature) {
                 let specified_features = match features_table.get(feature) {
                     None => panic!("Feature {feature} does not exist"),
-                    Some(Value::Array(ref specified_features)) => specified_features,
+                    Some(Value::Array(specified_features)) => specified_features,
                     _ => panic!("Feature {feature} is not mapped to an array"),
                 };
                 for spec in specified_features {
@@ -501,7 +514,7 @@ impl<'tmp> TempProject<'tmp> {
     fn update_version_and_feature(
         &self,
         dependencies: &mut Table,
-        features: &Option<Value>,
+        features: Option<&Value>,
         workspace: &ElaborateWorkspace<'_>,
         package_name: &str,
         version_to_latest: bool,
@@ -547,7 +560,7 @@ impl<'tmp> TempProject<'tmp> {
                 }
                 Value::Table(ref t) => {
                     let mut name = match t.get("package") {
-                        Some(Value::String(ref s)) => s,
+                        Some(Value::String(s)) => s,
                         Some(_) => panic!("'package' of dependency {dep_key} is not a string"),
                         None => &dep_key,
                     };
@@ -561,7 +574,7 @@ impl<'tmp> TempProject<'tmp> {
                     if !(version_to_latest || t.contains_key("features")) {
                         continue;
                     }
-                    let optional = t.get("optional").map_or(false, |optional| {
+                    let optional = t.get("optional").is_some_and(|optional| {
                         if let Value::Boolean(optional) = *optional {
                             optional
                         } else {
@@ -573,7 +586,7 @@ impl<'tmp> TempProject<'tmp> {
                     }
                     let mut replaced = t.clone();
                     let requirement = match t.get("version") {
-                        Some(Value::String(ref requirement)) => Some(requirement.as_str()),
+                        Some(Value::String(requirement)) => Some(requirement.as_str()),
                         Some(_) => panic!("Version of {name} is not a string"),
                         _ => None,
                     };
@@ -599,7 +612,7 @@ impl<'tmp> TempProject<'tmp> {
                         );
                     }
                     match replaced.get("features") {
-                        Some(Value::Array(ref features)) => {
+                        Some(Value::Array(features)) => {
                             let features = features
                                 .iter()
                                 .filter(|&feature| {
@@ -721,7 +734,11 @@ impl<'tmp> TempProject<'tmp> {
 
 /// Features and optional dependencies of a Summary
 fn features_and_options(summary: &Summary) -> HashSet<&str> {
-    let mut result: HashSet<&str> = summary.features().keys().map(|s| s.as_str()).collect();
+    let mut result: HashSet<&str> = summary
+        .features()
+        .keys()
+        .map(InternedString::as_str)
+        .collect();
     summary
         .dependencies()
         .iter()

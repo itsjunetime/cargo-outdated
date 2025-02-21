@@ -1,6 +1,6 @@
 use std::ffi::OsString;
 
-use clap::{error::Result, ArgAction, Parser, Subcommand, ValueEnum};
+use clap::{ArgAction, Parser, Subcommand, ValueEnum, error::Result};
 
 #[derive(ValueEnum, Copy, Clone, Debug, PartialEq, Default, strum::Display)]
 #[strum(ascii_case_insensitive, serialize_all = "lowercase")]
@@ -35,6 +35,7 @@ enum CargoCommand {
 #[derive(Parser, Debug, PartialEq, Default)]
 #[command(version)]
 #[command(about = "Displays information about project dependency versions")]
+#[expect(clippy::struct_excessive_bools)]
 pub struct Options {
     /// Output formatting
     #[arg(long, value_enum, ignore_case = true, default_value_t = Default::default())]

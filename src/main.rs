@@ -12,12 +12,12 @@ mod error;
 use std::collections::HashSet;
 
 use cargo::{
-    core::{shell::Verbosity, Workspace},
+    GlobalContext,
+    core::{Workspace, shell::Verbosity},
     util::{
-        context::GlobalContext,
+        CargoResult, CliError,
         important_paths::find_root_manifest_for_wd,
         network::http::{http_handle, needs_custom_http_transport},
-        CargoResult, CliError,
     },
 };
 
@@ -51,7 +51,7 @@ fn main() {
     }
 
     let exit_code = options.exit_code;
-    let result = execute(options, &mut context);
+    let result = execute(&options, &mut context);
     match result {
         Err(e) => {
             context.shell().set_verbosity(Verbosity::Normal);
@@ -69,7 +69,7 @@ fn main() {
 }
 
 /// executes the cargo-outdate command with the cargo configuration and options
-pub fn execute(options: Options, context: &mut GlobalContext) -> CargoResult<i32> {
+pub fn execute(options: &Options, context: &mut GlobalContext) -> CargoResult<i32> {
     // Check if $CARGO_HOME is set before capturing the config environment
     // if it is, set it in the configure options
     let cargo_home_path = std::env::var_os("CARGO_HOME").map(std::path::PathBuf::from);
@@ -108,7 +108,7 @@ pub fn execute(options: Options, context: &mut GlobalContext) -> CargoResult<i32
     if options.verbose == 0 {
         context.shell().set_verbosity(Verbosity::Quiet);
     }
-    let ela_curr = ElaborateWorkspace::from_workspace(&curr_workspace, &options)?;
+    let ela_curr = ElaborateWorkspace::from_workspace(&curr_workspace, options)?;
     if options.verbose > 0 {
         context.shell().set_verbosity(Verbosity::Verbose);
     } else {
@@ -118,7 +118,7 @@ pub fn execute(options: Options, context: &mut GlobalContext) -> CargoResult<i32
     verbose!(context, "Parsing...", "compat workspace");
     let mut skipped = HashSet::new();
     let compat_proj =
-        TempProject::from_workspace(&ela_curr, &curr_manifest.to_string_lossy(), &options)?;
+        TempProject::from_workspace(&ela_curr, &curr_manifest.to_string_lossy(), options)?;
     compat_proj.write_manifest_semver(
         curr_workspace.root(),
         compat_proj.temp_dir.path(),
@@ -133,12 +133,12 @@ pub fn execute(options: Options, context: &mut GlobalContext) -> CargoResult<i32
         compat_workspace
             .as_ref()
             .ok_or(OutdatedError::CannotElaborateWorkspace)?,
-        &options,
+        options,
     )?;
 
     verbose!(context, "Parsing...", "latest workspace");
     let latest_proj =
-        TempProject::from_workspace(&ela_curr, &curr_manifest.to_string_lossy(), &options)?;
+        TempProject::from_workspace(&ela_curr, &curr_manifest.to_string_lossy(), options)?;
     latest_proj.write_manifest_latest(
         curr_workspace.root(),
         compat_proj.temp_dir.path(),
@@ -153,7 +153,7 @@ pub fn execute(options: Options, context: &mut GlobalContext) -> CargoResult<i32
         latest_workspace
             .as_ref()
             .ok_or(OutdatedError::CannotElaborateWorkspace)?,
-        &options,
+        options,
     )?;
 
     if ela_curr.workspace_mode {
@@ -167,17 +167,17 @@ pub fn execute(options: Options, context: &mut GlobalContext) -> CargoResult<i32
             ela_curr.resolve_status(
                 &ela_compat,
                 &ela_latest,
-                &options,
+                options,
                 context,
                 member.package_id(),
                 &skipped,
             )?;
             match options.format {
                 Format::List => {
-                    sum += ela_curr.print_list(&options, member.package_id(), sum > 0, &skipped)?;
+                    sum += ela_curr.print_list(options, member.package_id(), sum > 0, &skipped)?;
                 }
                 Format::Json => {
-                    sum += ela_curr.print_json(&options, member.package_id(), &skipped)?;
+                    sum += ela_curr.print_json(options, member.package_id(), &skipped)?;
                 }
             }
         }
@@ -187,17 +187,17 @@ pub fn execute(options: Options, context: &mut GlobalContext) -> CargoResult<i32
         Ok(sum)
     } else {
         verbose!(context, "Resolving...", "package status");
-        let root = ela_curr.determine_root(&options)?;
-        ela_curr.resolve_status(&ela_compat, &ela_latest, &options, context, root, &skipped)?;
+        let root = ela_curr.determine_root(options)?;
+        ela_curr.resolve_status(&ela_compat, &ela_latest, options, context, root, &skipped)?;
         verbose!(context, "Printing...", "list format");
         let mut count = 0;
 
         match options.format {
             Format::List => {
-                count = ela_curr.print_list(&options, root, false, &skipped)?;
+                count = ela_curr.print_list(options, root, false, &skipped)?;
             }
             Format::Json => {
-                ela_curr.print_json(&options, root, &skipped)?;
+                ela_curr.print_json(options, root, &skipped)?;
             }
         }
 
